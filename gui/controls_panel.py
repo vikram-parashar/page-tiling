@@ -9,17 +9,18 @@ Features:
 - Canvas presets
 - Portrait/Landscape auto swap
 - Custom sheet size
-- Margin controls
-- Gap controls
+- Per-image width / height
+- Horizontal / vertical spacing
 - Layout mode selection
 - Scaling mode selection
 - DPI control
 - Background options
 - Cut mark settings
-- Export settings
+- Export settings (single-page option)
 - Template save/load hooks
 - Collapsible sections
 - Signal-ready architecture
+- Live preview on state change
 
 Framework:
 PySide6
@@ -80,6 +81,8 @@ class ControlsPanel(QWidget):
 
         self._build_ui()
 
+        self._connect_live_signals()
+
     # =====================================================
     # UI
     # =====================================================
@@ -108,7 +111,6 @@ class ControlsPanel(QWidget):
         self._build_folder_section()
         self._build_canvas_section()
         self._build_layout_section()
-        self._build_margin_section()
         self._build_scaling_section()
         self._build_background_section()
         self._build_export_section()
@@ -253,7 +255,7 @@ class ControlsPanel(QWidget):
         self.layout.addWidget(box)
 
     # =====================================================
-    # LAYOUT SECTION
+    # LAYOUT SECTION (per-image size + h/v spacing)
     # =====================================================
 
     def _build_layout_section(self):
@@ -285,10 +287,12 @@ class ControlsPanel(QWidget):
         self.image_width = QDoubleSpinBox()
         self.image_width.setRange(1, 1000)
         self.image_width.setValue(35)
+        self.image_width.setSuffix(" mm")
 
         self.image_height = QDoubleSpinBox()
         self.image_height.setRange(1, 1000)
         self.image_height.setValue(45)
+        self.image_height.setSuffix(" mm")
 
         row.addWidget(QLabel("Image W"))
         row.addWidget(self.image_width)
@@ -298,58 +302,27 @@ class ControlsPanel(QWidget):
 
         layout.addLayout(row)
 
-        # GAP
+        # SPACING
 
         row2 = QHBoxLayout()
 
         self.h_gap = QDoubleSpinBox()
+        self.h_gap.setRange(0, 100)
         self.h_gap.setValue(2)
+        self.h_gap.setSuffix(" mm")
 
         self.v_gap = QDoubleSpinBox()
+        self.v_gap.setRange(0, 100)
         self.v_gap.setValue(2)
+        self.v_gap.setSuffix(" mm")
 
-        row2.addWidget(QLabel("H Gap"))
+        row2.addWidget(QLabel("H Space"))
         row2.addWidget(self.h_gap)
 
-        row2.addWidget(QLabel("V Gap"))
+        row2.addWidget(QLabel("V Space"))
         row2.addWidget(self.v_gap)
 
         layout.addLayout(row2)
-
-        box.setLayout(layout)
-
-        self.layout.addWidget(box)
-
-    # =====================================================
-    # MARGINS
-    # =====================================================
-
-    def _build_margin_section(self):
-
-        box = self._create_group("Margins")
-
-        layout = QVBoxLayout()
-
-        self.margin_left = self._margin_spin()
-        self.margin_right = self._margin_spin()
-        self.margin_top = self._margin_spin()
-        self.margin_bottom = self._margin_spin()
-
-        for label, widget in [
-
-            ("Left", self.margin_left),
-            ("Right", self.margin_right),
-            ("Top", self.margin_top),
-            ("Bottom", self.margin_bottom),
-
-        ]:
-
-            row = QHBoxLayout()
-
-            row.addWidget(QLabel(label))
-            row.addWidget(widget)
-
-            layout.addLayout(row)
 
         box.setLayout(layout)
 
@@ -459,6 +432,16 @@ class ControlsPanel(QWidget):
         layout.addWidget(QLabel("JPG Quality"))
         layout.addWidget(self.jpg_quality)
 
+        # SINGLE PAGE EXPORT
+
+        self.export_single_page = QCheckBox(
+            "Export Only First Page"
+        )
+
+        self.export_single_page.setChecked(False)
+
+        layout.addWidget(self.export_single_page)
+
         box.setLayout(layout)
 
         self.layout.addWidget(box)
@@ -481,9 +464,11 @@ class ControlsPanel(QWidget):
 
         self.cutmark_length = QDoubleSpinBox()
         self.cutmark_length.setValue(3)
+        self.cutmark_length.setSuffix(" mm")
 
         self.cutmark_offset = QDoubleSpinBox()
         self.cutmark_offset.setValue(1)
+        self.cutmark_offset.setSuffix(" mm")
 
         row = QHBoxLayout()
 
@@ -553,6 +538,85 @@ class ControlsPanel(QWidget):
         self.layout.addLayout(row)
 
     # =====================================================
+    # LIVE PREVIEW SIGNALS
+    # =====================================================
+
+    def _connect_live_signals(self):
+        """
+        Connect all setting-change widgets so preview
+        updates automatically on state change.
+        """
+
+        # Canvas
+        self.canvas_preset.currentTextChanged.connect(
+            self._emit_settings_changed
+        )
+        self.width_spin.valueChanged.connect(
+            self._emit_settings_changed
+        )
+        self.height_spin.valueChanged.connect(
+            self._emit_settings_changed
+        )
+        self.orientation_combo.currentTextChanged.connect(
+            self._emit_settings_changed
+        )
+
+        # Layout
+        self.layout_mode.currentTextChanged.connect(
+            self._emit_settings_changed
+        )
+        self.image_width.valueChanged.connect(
+            self._emit_settings_changed
+        )
+        self.image_height.valueChanged.connect(
+            self._emit_settings_changed
+        )
+        self.h_gap.valueChanged.connect(
+            self._emit_settings_changed
+        )
+        self.v_gap.valueChanged.connect(
+            self._emit_settings_changed
+        )
+
+        # Scaling
+        self.scaling_mode.currentTextChanged.connect(
+            self._emit_settings_changed
+        )
+
+        # Export DPI
+        self.dpi_spin.valueChanged.connect(
+            self._emit_settings_changed
+        )
+
+        # Background
+        self.background_type.currentTextChanged.connect(
+            self._emit_settings_changed
+        )
+
+        # Cut marks
+        self.cutmark_enable.stateChanged.connect(
+            self._emit_settings_changed
+        )
+
+        # Input folder
+        self.input_edit.textChanged.connect(
+            self._emit_settings_changed
+        )
+
+        # Subfolders
+        self.subfolder_check.stateChanged.connect(
+            self._emit_settings_changed
+        )
+
+    def _emit_settings_changed(self, _=None):
+        """
+        Emit settings_changed signal with current settings dict.
+        """
+        self.settings_changed.emit(
+            self.get_settings()
+        )
+
+    # =====================================================
     # HELPERS
     # =====================================================
 
@@ -566,15 +630,6 @@ class ControlsPanel(QWidget):
         )
 
         return box
-
-    def _margin_spin(self):
-
-        spin = QDoubleSpinBox()
-
-        spin.setRange(0, 1000)
-        spin.setValue(5)
-
-        return spin
 
     # =====================================================
     # EVENTS
@@ -610,6 +665,8 @@ class ControlsPanel(QWidget):
         if color.isValid():
 
             self.background_color = color
+
+            self._emit_settings_changed()
 
     def on_canvas_changed(self):
 
@@ -709,22 +766,6 @@ class ControlsPanel(QWidget):
                 self.v_gap.value(),
 
             # -----------------------------------------
-            # MARGINS
-            # -----------------------------------------
-
-            "margin_left_mm":
-                self.margin_left.value(),
-
-            "margin_right_mm":
-                self.margin_right.value(),
-
-            "margin_top_mm":
-                self.margin_top.value(),
-
-            "margin_bottom_mm":
-                self.margin_bottom.value(),
-
-            # -----------------------------------------
             # SCALING
             # -----------------------------------------
 
@@ -753,6 +794,9 @@ class ControlsPanel(QWidget):
 
             "jpg_quality":
                 self.jpg_quality.value(),
+
+            "export_single_page":
+                self.export_single_page.isChecked(),
 
             # -----------------------------------------
             # CUT MARKS

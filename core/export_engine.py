@@ -8,6 +8,8 @@ Features:
 - Export JPG
 - Export PDF
 - Multi-page support
+- Single-page export option
+- tqdm progress bar
 - DPI-aware rendering
 - Background support
 - Cut marks support
@@ -30,6 +32,12 @@ from core.cutmarks import (
     CutMarksGenerator,
     CutMarkSettings,
 )
+
+try:
+    from tqdm import tqdm
+    HAS_TQDM = True
+except ImportError:
+    HAS_TQDM = False
 
 
 # =========================================================
@@ -61,6 +69,7 @@ class ExportSettings:
         background_color=(255, 255, 255),
         transparent=False,
         pdf_multi_page=True,
+        single_page=False,
     ):
         self.export_format = export_format.upper()
         self.dpi = dpi
@@ -68,6 +77,7 @@ class ExportSettings:
         self.background_color = background_color
         self.transparent = transparent
         self.pdf_multi_page = pdf_multi_page
+        self.single_page = single_page
 
 
 # =========================================================
@@ -135,13 +145,30 @@ class ExportEngine:
         if export_format not in self.SUPPORTED_FORMATS:
             raise ValueError(f"Unsupported format: {export_format}")
 
+        # ---------------------------------------------
+        # SINGLE PAGE EXPORT
+        # ---------------------------------------------
+
+        if export_settings.single_page:
+            pages = pages[:1]
+
+        # ---------------------------------------------
+        # PDF
+        # ---------------------------------------------
+
         if export_format == "PDF":
             self._export_pdf(
                 pages,
                 output_folder,
                 filename_pattern,
                 export_settings,
+                cutmark_settings,
             )
+
+        # ---------------------------------------------
+        # PNG / JPG
+        # ---------------------------------------------
+
         else:
             self._export_images(
                 pages,
@@ -152,7 +179,7 @@ class ExportEngine:
             )
 
     # =====================================================
-    # IMAGE EXPORT
+    # IMAGE EXPORT (with tqdm)
     # =====================================================
 
     def _export_images(
@@ -164,7 +191,17 @@ class ExportEngine:
         cutmark_settings,
     ):
 
-        for page_index, page in enumerate(pages, start=1):
+        iterator = enumerate(pages, start=1)
+
+        if HAS_TQDM:
+            iterator = tqdm(
+                iterator,
+                total=len(pages),
+                desc="Exporting pages",
+                unit="page",
+            )
+
+        for page_index, page in iterator:
 
             filename = self._build_filename(
                 filename_pattern,
@@ -198,7 +235,7 @@ class ExportEngine:
             gc.collect()
 
     # =====================================================
-    # PDF EXPORT
+    # PDF EXPORT (with tqdm)
     # =====================================================
 
     def _export_pdf(
@@ -207,6 +244,7 @@ class ExportEngine:
         output_folder,
         filename_pattern,
         export_settings,
+        cutmark_settings=None,
     ):
 
         filename = self._build_filename(
@@ -227,12 +265,22 @@ class ExportEngine:
             pagesize=(page_width_pt, page_height_pt),
         )
 
-        for page in pages:
+        iterator = pages
+
+        if HAS_TQDM:
+            iterator = tqdm(
+                iterator,
+                total=len(pages),
+                desc="Exporting PDF",
+                unit="page",
+            )
+
+        for page in iterator:
 
             rendered = self._render_page(
                 page,
                 export_settings,
-                cutmark_settings=None,
+                cutmark_settings=cutmark_settings,
             )
 
             img_reader = ImageReader(rendered)
@@ -309,12 +357,24 @@ class ExportEngine:
                 print(f"Background image error: {e}")
 
         # -----------------------------------------------
-        # PLACE IMAGES
+        # PLACE IMAGES (with tqdm)
         # -----------------------------------------------
+
+        image_items = page.image_items
+
+        img_iterator = image_items
+
+        if HAS_TQDM:
+            img_iterator = tqdm(
+                img_iterator,
+                desc="Rendering images",
+                unit="img",
+                leave=False,
+            )
 
         rects = []
 
-        for item in page.image_items:
+        for item in img_iterator:
 
             try:
                 img = Image.open(item["path"])
@@ -488,6 +548,7 @@ if __name__ == "__main__":
     settings = ExportSettings(
         export_format="PNG",
         dpi=300,
+        single_page=False,
     )
 
     cutmarks = CutMarkSettings(

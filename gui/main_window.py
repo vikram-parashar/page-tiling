@@ -6,13 +6,16 @@ Main application window for HG Tile Studio
 Features:
 - Splitter layout
 - Controls panel
-- Live preview panel
+- Live preview panel (updates on state change)
 - Status bar
 - Toolbar
 - Menu bar
 - Template integration
 - Export integration
+- tqdm progress for export
+- Single-page export option
 - Full pipeline: ImageLoader -> LayoutEngine -> Preview / ExportEngine
+- Content centered on page (no margin controls)
 
 Framework:
 PySide6
@@ -22,7 +25,7 @@ Author: HARRY GRAPHICS
 
 import traceback
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
 
@@ -85,6 +88,17 @@ class MainWindow(QMainWindow):
         self.layout_engine = LayoutEngine()
         self.export_engine = ExportEngine()
         self.image_loader = None  # created per job
+
+        # ---------------------------------------------
+        # DEBOUNCE TIMER for live preview
+        # ---------------------------------------------
+
+        self._preview_timer = QTimer(self)
+        self._preview_timer.setSingleShot(True)
+        self._preview_timer.setInterval(300)  # 300ms debounce
+        self._preview_timer.timeout.connect(
+            self.generate_preview
+        )
 
         # ---------------------------------------------
         # UI
@@ -297,6 +311,7 @@ class MainWindow(QMainWindow):
 
     def _connect_signals(self):
 
+        # Button-based signals
         self.controls.preview_requested.connect(
             self.generate_preview
         )
@@ -313,6 +328,23 @@ class MainWindow(QMainWindow):
             self.load_template
         )
 
+        # Live preview on state change (debounced)
+        self.controls.settings_changed.connect(
+            self._on_settings_changed
+        )
+
+    # =====================================================
+    # DEBOUNCED LIVE PREVIEW
+    # =====================================================
+
+    def _on_settings_changed(self, settings_dict):
+        """
+        Called when any setting changes.
+        Restarts debounce timer so preview only
+        updates after user stops changing things.
+        """
+        self._preview_timer.start()
+
     # =====================================================
     # BUILD LAYOUT SETTINGS FROM CONTROLS
     # =====================================================
@@ -328,16 +360,11 @@ class MainWindow(QMainWindow):
 
             dpi=s["dpi"],
 
-            margin_left_mm=s["margin_left_mm"],
-            margin_right_mm=s["margin_right_mm"],
-            margin_top_mm=s["margin_top_mm"],
-            margin_bottom_mm=s["margin_bottom_mm"],
+            image_width_mm=s["image_width_mm"],
+            image_height_mm=s["image_height_mm"],
 
             horizontal_gap_mm=s["horizontal_gap_mm"],
             vertical_gap_mm=s["vertical_gap_mm"],
-
-            image_width_mm=s["image_width_mm"],
-            image_height_mm=s["image_height_mm"],
 
             layout_mode=s["layout_mode"],
 
@@ -380,7 +407,7 @@ class MainWindow(QMainWindow):
         return paths, None
 
     # =====================================================
-    # PREVIEW
+    # PREVIEW (first page only, with actual images)
     # =====================================================
 
     def generate_preview(self):
@@ -390,10 +417,11 @@ class MainWindow(QMainWindow):
             paths, err = self._collect_image_paths()
 
             if err:
-                QMessageBox.warning(
-                    self,
-                    "Preview",
-                    err,
+                # Silently skip preview if no folder selected
+                # (avoids popups during live preview)
+                self.preview_panel.clear_preview()
+                self.preview_panel.status_label.setText(
+                    "Select an input folder to preview"
                 )
                 return
 
@@ -404,22 +432,28 @@ class MainWindow(QMainWindow):
                 settings,
             )
 
-            self.preview_panel.draw_multi_page_preview(
-                pages,
+            if not pages:
+                self.preview_panel.clear_preview()
+                return
+
+            # Show only first page with actual images
+            self.preview_panel.draw_first_page_preview(
+                pages[0],
+                dpi=settings.dpi,
             )
 
             self.statusBar().showMessage(
                 f"Preview: {len(paths)} images, "
-                f"{len(pages)} page(s)"
+                f"{len(pages)} page(s) | "
+                f"Showing page 1"
             )
 
         except Exception as e:
 
-            show_error(
-                self,
-                "Preview Error",
-                str(e),
-                traceback.format_exc(),
+            # Don't show error dialog for live preview
+            # Just log to status bar
+            self.statusBar().showMessage(
+                f"Preview error: {str(e)}"
             )
 
     # =====================================================
@@ -465,6 +499,8 @@ class MainWindow(QMainWindow):
             # BUILD EXPORT SETTINGS
             # -----------------------------------------
 
+            single_page = s.get("export_single_page", False)
+
             export_settings = ExportSettings(
                 export_format=s["export_format"],
                 dpi=s["dpi"],
@@ -476,6 +512,7 @@ class MainWindow(QMainWindow):
                     s.get("background_type", "Solid Color")
                     == "Transparent"
                 ),
+                single_page=single_page,
             )
 
             # -----------------------------------------
@@ -543,6 +580,8 @@ class MainWindow(QMainWindow):
                 cutmark_settings=cutmark_settings,
             )
 
+            pages_exported = 1 if single_page else len(export_pages)
+
             progress_dlg.update_progress(
                 100,
                 "Export completed!",
@@ -552,14 +591,14 @@ class MainWindow(QMainWindow):
 
             self.statusBar().showMessage(
                 f"Export completed: "
-                f"{len(export_pages)} page(s)"
+                f"{pages_exported} page(s)"
             )
 
             show_success(
                 self,
                 "Export Complete",
                 f"Successfully exported "
-                f"{len(export_pages)} page(s) to:\n"
+                f"{pages_exported} page(s) to:\n"
                 f"{output_folder}",
             )
 
@@ -684,8 +723,10 @@ class MainWindow(QMainWindow):
     # =====================================================
 
     def _apply_template_to_controls(self, data):
-
-        """Apply template data dictionary to the controls panel."""
+        """
+        Apply template data dictionary to the controls panel.
+        No margin fields anymore.
+        """
 
         # CANVAS
 
@@ -753,27 +794,6 @@ class MainWindow(QMainWindow):
             v_gap = layout_data.get("vertical_gap_mm")
             if v_gap is not None:
                 self.controls.v_gap.setValue(v_gap)
-
-        # MARGINS
-
-        margins = data.get("margins", {})
-
-        if margins:
-            left = margins.get("left_mm")
-            if left is not None:
-                self.controls.margin_left.setValue(left)
-
-            right = margins.get("right_mm")
-            if right is not None:
-                self.controls.margin_right.setValue(right)
-
-            top = margins.get("top_mm")
-            if top is not None:
-                self.controls.margin_top.setValue(top)
-
-            bottom = margins.get("bottom_mm")
-            if bottom is not None:
-                self.controls.margin_bottom.setValue(bottom)
 
         # SCALING
 
@@ -845,6 +865,10 @@ class MainWindow(QMainWindow):
             quality = export.get("jpg_quality")
             if quality is not None:
                 self.controls.jpg_quality.setValue(quality)
+
+            single = export.get("single_page")
+            if single is not None:
+                self.controls.export_single_page.setChecked(single)
 
     # =====================================================
     # ABOUT

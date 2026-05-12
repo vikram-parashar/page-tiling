@@ -4,23 +4,19 @@ core/layout_engine.py
 Professional layout engine for HG Tile Studio
 
 Features:
-- Grid layout
-- Auto-fit layout
-- Space-between
-- Space-around
-- Space-evenly
+- Grid layout (auto-fit columns/rows)
+- Space-between / Space-around / Space-evenly
 - Packed layout
-- Margin system
-- Gap system
+- Per-image width and height
+- Separate horizontal and vertical spacing
+- Content always centered on page
 - DPI-aware calculations
 - Portrait / landscape safe
 - Pagination support
-- Alignment support
 
 Author: HARRY GRAPHICS
 """
 
-import math
 from dataclasses import dataclass
 from typing import List
 
@@ -79,27 +75,18 @@ class LayoutSettings:
     dpi: int = 300
 
     # ---------------------------------------------
-    # MARGINS
-    # ---------------------------------------------
-
-    margin_left_mm: float = 5
-    margin_right_mm: float = 5
-    margin_top_mm: float = 5
-    margin_bottom_mm: float = 5
-
-    # ---------------------------------------------
-    # GAPS
-    # ---------------------------------------------
-
-    horizontal_gap_mm: float = 2
-    vertical_gap_mm: float = 2
-
-    # ---------------------------------------------
-    # IMAGE SIZE
+    # IMAGE SIZE (per-image)
     # ---------------------------------------------
 
     image_width_mm: float = 35
     image_height_mm: float = 45
+
+    # ---------------------------------------------
+    # SPACING (between images)
+    # ---------------------------------------------
+
+    horizontal_gap_mm: float = 2
+    vertical_gap_mm: float = 2
 
     # ---------------------------------------------
     # LAYOUT
@@ -110,13 +97,6 @@ class LayoutSettings:
     # grid
     columns: int = 0
     rows: int = 0
-
-    # ---------------------------------------------
-    # ALIGNMENT
-    # ---------------------------------------------
-
-    horizontal_align: str = "center"
-    vertical_align: str = "top"
 
     # ---------------------------------------------
     # IMAGE MODE
@@ -175,31 +155,7 @@ class LayoutEngine:
         )
 
         # ---------------------------------------------
-        # MARGINS
-        # ---------------------------------------------
-
-        margin_left = mm_to_px(
-            settings.margin_left_mm,
-            settings.dpi,
-        )
-
-        margin_right = mm_to_px(
-            settings.margin_right_mm,
-            settings.dpi,
-        )
-
-        margin_top = mm_to_px(
-            settings.margin_top_mm,
-            settings.dpi,
-        )
-
-        margin_bottom = mm_to_px(
-            settings.margin_bottom_mm,
-            settings.dpi,
-        )
-
-        # ---------------------------------------------
-        # GAPS
+        # SPACING
         # ---------------------------------------------
 
         h_gap = mm_to_px(
@@ -227,23 +183,7 @@ class LayoutEngine:
         )
 
         # ---------------------------------------------
-        # USABLE AREA
-        # ---------------------------------------------
-
-        usable_width = (
-            page_width_px
-            - margin_left
-            - margin_right
-        )
-
-        usable_height = (
-            page_height_px
-            - margin_top
-            - margin_bottom
-        )
-
-        # ---------------------------------------------
-        # AUTO FIT
+        # AUTO FIT: calculate columns and rows
         # ---------------------------------------------
 
         columns = settings.columns
@@ -253,13 +193,13 @@ class LayoutEngine:
 
             columns = max(
                 1,
-                (usable_width + h_gap)
+                (page_width_px + h_gap)
                 // (img_w + h_gap)
             )
 
             rows = max(
                 1,
-                (usable_height + v_gap)
+                (page_height_px + v_gap)
                 // (img_h + v_gap)
             )
 
@@ -284,10 +224,8 @@ class LayoutEngine:
                 rows,
                 img_w,
                 img_h,
-                usable_width,
-                usable_height,
-                margin_left,
-                margin_top,
+                page_width_px,
+                page_height_px,
                 h_gap,
                 v_gap,
                 settings,
@@ -314,16 +252,18 @@ class LayoutEngine:
         rows,
         img_w,
         img_h,
-        usable_width,
-        usable_height,
-        margin_left,
-        margin_top,
+        page_width_px,
+        page_height_px,
         h_gap,
         v_gap,
         settings,
     ):
 
         items = []
+
+        # How many images actually placed this page
+        actual_count = len(image_paths)
+        actual_rows = (actual_count + columns - 1) // columns
 
         # ---------------------------------------------
         # DYNAMIC SPACING
@@ -336,23 +276,20 @@ class LayoutEngine:
         )
 
         total_grid_height = (
-            rows * img_h
+            actual_rows * img_h
         ) + (
-            (rows - 1) * v_gap
+            (actual_rows - 1) * v_gap
         )
 
         extra_x = max(
             0,
-            usable_width - total_grid_width
+            page_width_px - total_grid_width
         )
 
         extra_y = max(
             0,
-            usable_height - total_grid_height
+            page_height_px - total_grid_height
         )
-
-        start_x = margin_left
-        start_y = margin_top
 
         dynamic_h_gap = h_gap
         dynamic_v_gap = v_gap
@@ -367,15 +304,15 @@ class LayoutEngine:
 
             if columns > 1:
                 dynamic_h_gap = (
-                    usable_width
+                    page_width_px
                     - (columns * img_w)
                 ) // (columns - 1)
 
-            if rows > 1:
+            if actual_rows > 1:
                 dynamic_v_gap = (
-                    usable_height
-                    - (rows * img_h)
-                ) // (rows - 1)
+                    page_height_px
+                    - (actual_rows * img_h)
+                ) // (actual_rows - 1)
 
         # ---------------------------------------------
         # SPACE AROUND
@@ -388,11 +325,8 @@ class LayoutEngine:
             ) if columns > 0 else h_gap
 
             dynamic_v_gap = (
-                extra_y // (rows * 2)
-            ) if rows > 0 else v_gap
-
-            start_x += dynamic_h_gap
-            start_y += dynamic_v_gap
+                extra_y // (actual_rows * 2)
+            ) if actual_rows > 0 else v_gap
 
         # ---------------------------------------------
         # SPACE EVENLY
@@ -405,11 +339,8 @@ class LayoutEngine:
             ) if columns > 0 else h_gap
 
             dynamic_v_gap = (
-                extra_y // (rows + 1)
-            ) if rows > 0 else v_gap
-
-            start_x += dynamic_h_gap
-            start_y += dynamic_v_gap
+                extra_y // (actual_rows + 1)
+            ) if actual_rows > 0 else v_gap
 
         # ---------------------------------------------
         # PACKED
@@ -421,7 +352,7 @@ class LayoutEngine:
             dynamic_v_gap = 0
 
         # ---------------------------------------------
-        # ALIGNMENT
+        # COMPUTE CONTENT SIZE AND CENTER ON PAGE
         # ---------------------------------------------
 
         content_width = (
@@ -431,38 +362,14 @@ class LayoutEngine:
         )
 
         content_height = (
-            rows * img_h
+            actual_rows * img_h
         ) + (
-            (rows - 1) * dynamic_v_gap
+            (actual_rows - 1) * dynamic_v_gap
         )
 
-        # Horizontal align
-
-        if settings.horizontal_align == "center":
-
-            start_x = margin_left + (
-                (usable_width - content_width) // 2
-            )
-
-        elif settings.horizontal_align == "right":
-
-            start_x = margin_left + (
-                usable_width - content_width
-            )
-
-        # Vertical align
-
-        if settings.vertical_align == "middle":
-
-            start_y = margin_top + (
-                (usable_height - content_height) // 2
-            )
-
-        elif settings.vertical_align == "bottom":
-
-            start_y = margin_top + (
-                usable_height - content_height
-            )
+        # Always center the content on the page
+        start_x = (page_width_px - content_width) // 2
+        start_y = (page_height_px - content_height) // 2
 
         # ---------------------------------------------
         # PLACE ITEMS
@@ -519,12 +426,7 @@ if __name__ == "__main__":
         horizontal_gap_mm=2,
         vertical_gap_mm=2,
 
-        margin_left_mm=5,
-        margin_right_mm=5,
-        margin_top_mm=5,
-        margin_bottom_mm=5,
-
-        layout_mode="space-evenly",
+        layout_mode="grid",
 
         auto_fit=True,
 

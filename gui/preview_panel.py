@@ -5,15 +5,13 @@ Professional preview panel for HG Tile Studio
 
 Features:
 - QGraphicsView based preview
+- Shows only first page with actual images
 - Zoom in / zoom out
 - Mouse wheel zoom
 - Pan support
 - Fit-to-screen
 - Reset view
-- Multi-page preview support
-- Thumbnail rendering
-- Collapsible-ready architecture
-- Fast rendering structure
+- Real image thumbnails rendered from disk
 - DPI-safe preview rendering
 
 Framework:
@@ -30,6 +28,7 @@ from PySide6.QtCore import (
 
 from PySide6.QtGui import (
     QPixmap,
+    QImage,
     QPainter,
     QColor,
     QPen,
@@ -49,6 +48,8 @@ from PySide6.QtWidgets import (
     QGraphicsPixmapItem,
     QGraphicsRectItem,
 )
+
+from PIL import Image
 
 
 # =========================================================
@@ -268,9 +269,7 @@ class PreviewPanel(QWidget):
         zoom_out_btn = QPushButton("-")
 
         fit_btn = QPushButton("Fit")
-
         reset_btn = QPushButton("Reset")
-
         clear_btn = QPushButton("Clear")
 
         zoom_in_btn.clicked.connect(
@@ -404,7 +403,207 @@ class PreviewPanel(QWidget):
         )
 
     # =====================================================
-    # DISPLAY PIXMAP
+    # DISPLAY FIRST PAGE WITH ACTUAL IMAGES
+    # =====================================================
+
+    def draw_first_page_preview(
+        self,
+        page,
+        dpi=300,
+    ):
+        """
+        Draw only the first page of the layout using
+        actual image thumbnails loaded from disk.
+
+        Parameters:
+            page  : LayoutPage object (from layout_engine)
+            dpi   : DPI for rendering calculations
+        """
+
+        self.scene.clear()
+
+        width_px = page.width_px
+        height_px = page.height_px
+
+        # -------------------------------------------------
+        # PAGE BACKGROUND
+        # -------------------------------------------------
+
+        page_rect = QGraphicsRectItem(
+            0,
+            0,
+            width_px,
+            height_px,
+        )
+
+        page_rect.setBrush(
+            QBrush(
+                QColor(255, 255, 255)
+            )
+        )
+
+        page_rect.setPen(
+            QPen(
+                QColor(180, 180, 180),
+                2,
+            )
+        )
+
+        self.scene.addItem(page_rect)
+
+        # -------------------------------------------------
+        # PLACE ACTUAL IMAGES
+        # -------------------------------------------------
+
+        for item in page.items:
+
+            pixmap = self._load_thumbnail(
+                item.path,
+                item.w,
+                item.h,
+            )
+
+            if pixmap and not pixmap.isNull():
+
+                # Scale the loaded pixmap to the exact
+                # layout cell size for crisp rendering
+
+                scaled = pixmap.scaled(
+                    item.w,
+                    item.h,
+                    Qt.IgnoreAspectRatio,
+                    Qt.SmoothTransformation,
+                )
+
+                gfx_item = QGraphicsPixmapItem(
+                    scaled
+                )
+
+                gfx_item.setPos(
+                    item.x,
+                    item.y,
+                )
+
+                self.scene.addItem(gfx_item)
+
+            else:
+
+                # Fallback: placeholder rectangle
+                rect = QGraphicsRectItem(
+                    item.x,
+                    item.y,
+                    item.w,
+                    item.h,
+                )
+
+                rect.setBrush(
+                    QBrush(
+                        QColor(200, 220, 255)
+                    )
+                )
+
+                rect.setPen(
+                    QPen(
+                        QColor(100, 140, 255),
+                        1,
+                    )
+                )
+
+                self.scene.addItem(rect)
+
+        # -------------------------------------------------
+        # SCENE RECT
+        # -------------------------------------------------
+
+        self.scene.setSceneRect(
+            QRectF(
+                0,
+                0,
+                width_px,
+                height_px,
+            )
+        )
+
+        self.fit_view()
+
+        self.status_label.setText(
+            f"Page 1 Preview: "
+            f"{width_px} x {height_px} px | "
+            f"{len(page.items)} image(s)"
+        )
+
+    # =====================================================
+    # LOAD THUMBNAIL FOR PREVIEW
+    # =====================================================
+
+    def _load_thumbnail(
+        self,
+        path,
+        target_w,
+        target_h,
+    ):
+        """
+        Load an image from disk and create a QPixmap
+        at the target layout cell size.
+        Uses PIL for robust loading with format support.
+        """
+
+        try:
+
+            img = Image.open(path)
+
+            # Convert to RGB if necessary
+            if img.mode not in ("RGB", "RGBA"):
+                img = img.convert("RGBA")
+
+            # Resize to target cell size
+            img = img.resize(
+                (target_w, target_h),
+                Image.LANCZOS,
+            )
+
+            # PIL -> QImage -> QPixmap
+            if img.mode == "RGBA":
+
+                data = img.tobytes(
+                    "raw", "RGBA"
+                )
+
+                qimg = QImage(
+                    data,
+                    img.width,
+                    img.height,
+                    QImage.Format_RGBA8888,
+                )
+
+            else:
+
+                data = img.tobytes(
+                    "raw", "RGB"
+                )
+
+                qimg = QImage(
+                    data,
+                    img.width,
+                    img.height,
+                    img.width * 3,
+                    QImage.Format_RGB888,
+                )
+
+            pixmap = QPixmap.fromImage(qimg)
+
+            img.close()
+
+            return pixmap
+
+        except Exception as e:
+
+            print(f"Preview load error: {e}")
+
+            return None
+
+    # =====================================================
+    # DISPLAY PIXMAP (legacy)
     # =====================================================
 
     def display_pixmap(
@@ -430,12 +629,12 @@ class PreviewPanel(QWidget):
 
         self.status_label.setText(
             f"Preview Size: "
-            f"{pixmap.width()} × "
+            f"{pixmap.width()} x "
             f"{pixmap.height()}"
         )
 
     # =====================================================
-    # DISPLAY IMAGE FILE
+    # DISPLAY IMAGE FILE (legacy)
     # =====================================================
 
     def display_image_file(
@@ -455,203 +654,6 @@ class PreviewPanel(QWidget):
 
         self.display_pixmap(pixmap)
 
-    # =====================================================
-    # DRAW PAGE PLACEHOLDER
-    # =====================================================
-
-    def draw_page_placeholder(
-        self,
-        width_px,
-        height_px,
-        items=None,
-    ):
-
-        """
-        Draw lightweight preview placeholders.
-        Fast preview for huge jobs.
-        """
-
-        self.scene.clear()
-
-        # ---------------------------------------------
-        # PAGE
-        # ---------------------------------------------
-
-        page = QGraphicsRectItem(
-            0,
-            0,
-            width_px,
-            height_px,
-        )
-
-        page.setBrush(
-            QBrush(
-                QColor(255, 255, 255)
-            )
-        )
-
-        page.setPen(
-            QPen(
-                QColor(180, 180, 180),
-                2,
-            )
-        )
-
-        self.scene.addItem(page)
-
-        # ---------------------------------------------
-        # ITEMS
-        # ---------------------------------------------
-
-        if items:
-
-            for item in items:
-
-                rect = QGraphicsRectItem(
-                    item.x,
-                    item.y,
-                    item.w,
-                    item.h,
-                )
-
-                rect.setBrush(
-                    QBrush(
-                        QColor(
-                            200,
-                            220,
-                            255,
-                        )
-                    )
-                )
-
-                rect.setPen(
-                    QPen(
-                        QColor(
-                            100,
-                            140,
-                            255,
-                        ),
-                        1,
-                    )
-                )
-
-                self.scene.addItem(rect)
-
-        # ---------------------------------------------
-        # SCENE RECT
-        # ---------------------------------------------
-
-        self.scene.setSceneRect(
-            QRectF(
-                0,
-                0,
-                width_px,
-                height_px,
-            )
-        )
-
-        self.fit_view()
-
-        self.status_label.setText(
-            f"Page Preview: "
-            f"{width_px} × {height_px}"
-        )
-
-    # =====================================================
-    # MULTI PAGE PREVIEW
-    # =====================================================
-
-    def draw_multi_page_preview(
-        self,
-        pages,
-        spacing=60,
-    ):
-
-        """
-        Draw vertical stacked page previews.
-        """
-
-        self.scene.clear()
-
-        current_y = 0
-
-        for page in pages:
-
-            # PAGE RECT
-
-            page_rect = QGraphicsRectItem(
-                0,
-                current_y,
-                page.width_px,
-                page.height_px,
-            )
-
-            page_rect.setBrush(
-                QBrush(
-                    QColor(255, 255, 255)
-                )
-            )
-
-            page_rect.setPen(
-                QPen(
-                    QColor(180, 180, 180),
-                    2,
-                )
-            )
-
-            self.scene.addItem(page_rect)
-
-            # ITEMS
-
-            for item in page.items:
-
-                rect = QGraphicsRectItem(
-                    item.x,
-                    item.y + current_y,
-                    item.w,
-                    item.h,
-                )
-
-                rect.setBrush(
-                    QBrush(
-                        QColor(
-                            210,
-                            225,
-                            255,
-                        )
-                    )
-                )
-
-                rect.setPen(
-                    QPen(
-                        QColor(
-                            100,
-                            140,
-                            255,
-                        ),
-                        1,
-                    )
-                )
-
-                self.scene.addItem(rect)
-
-            current_y += (
-                page.height_px
-                + spacing
-            )
-
-        # FINAL RECT
-
-        self.scene.setSceneRect(
-            self.scene.itemsBoundingRect()
-        )
-
-        self.fit_view()
-
-        self.status_label.setText(
-            f"Pages: {len(pages)}"
-        )
-
 
 # =========================================================
 # TEST
@@ -663,12 +665,13 @@ if __name__ == "__main__":
 
     class DummyItem:
 
-        def __init__(self, x, y, w, h):
+        def __init__(self, x, y, w, h, path=""):
 
             self.x = x
             self.y = y
             self.w = w
             self.h = h
+            self.path = path
 
     class DummyPage:
 
@@ -702,9 +705,7 @@ if __name__ == "__main__":
 
             page.items.append(item)
 
-    panel.draw_multi_page_preview(
-        [page, page]
-    )
+    panel.draw_first_page_preview(page)
 
     panel.resize(1200, 800)
 
