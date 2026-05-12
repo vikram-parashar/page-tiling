@@ -6,13 +6,13 @@ Main application window for HG Tile Studio
 Features:
 - Splitter layout
 - Controls panel
-- Preview panel placeholder
+- Live preview panel
 - Status bar
 - Toolbar
 - Menu bar
 - Template integration
 - Export integration
-- Modern scalable architecture
+- Full pipeline: ImageLoader -> LayoutEngine -> Preview / ExportEngine
 
 Framework:
 PySide6
@@ -30,18 +30,19 @@ from PySide6.QtWidgets import (
     QWidget,
     QHBoxLayout,
     QSplitter,
-    QLabel,
     QStatusBar,
     QFileDialog,
     QMessageBox,
 )
 
 from gui.controls_panel import ControlsPanel
+from gui.preview_panel import PreviewPanel
 
 from gui.dialogs import (
 
     TemplateSaveDialog,
     TemplateLoadDialog,
+    ExportProgressDialog,
     AboutDialog,
 
     show_error,
@@ -50,38 +51,10 @@ from gui.dialogs import (
 )
 
 from core.template_manager import TemplateManager
-
-
-# =========================================================
-# PREVIEW PLACEHOLDER
-# =========================================================
-
-class PreviewPanel(QWidget):
-
-    """
-    Placeholder preview panel.
-
-    Replace later with:
-    - QGraphicsView
-    - Zoom
-    - Pan
-    - Live rendering
-    """
-
-    def __init__(self):
-
-        super().__init__()
-
-        layout = QHBoxLayout(self)
-
-        label = QLabel(
-            "LIVE PREVIEW PANEL\n\n"
-            "QGraphicsView will be added later."
-        )
-
-        label.setAlignment(Qt.AlignCenter)
-
-        layout.addWidget(label)
+from core.layout_engine import LayoutEngine, LayoutSettings
+from core.export_engine import ExportEngine, ExportSettings, PageData
+from core.image_loader import ImageLoader
+from core.cutmarks import CutMarkSettings
 
 
 # =========================================================
@@ -105,10 +78,13 @@ class MainWindow(QMainWindow):
         self.resize(1600, 900)
 
         # ---------------------------------------------
-        # MANAGERS
+        # ENGINES
         # ---------------------------------------------
 
         self.template_manager = TemplateManager()
+        self.layout_engine = LayoutEngine()
+        self.export_engine = ExportEngine()
+        self.image_loader = None  # created per job
 
         # ---------------------------------------------
         # UI
@@ -338,6 +314,72 @@ class MainWindow(QMainWindow):
         )
 
     # =====================================================
+    # BUILD LAYOUT SETTINGS FROM CONTROLS
+    # =====================================================
+
+    def _build_layout_settings(self):
+
+        s = self.controls.get_settings()
+
+        settings = LayoutSettings(
+
+            page_width_mm=s["page_width_mm"],
+            page_height_mm=s["page_height_mm"],
+
+            dpi=s["dpi"],
+
+            margin_left_mm=s["margin_left_mm"],
+            margin_right_mm=s["margin_right_mm"],
+            margin_top_mm=s["margin_top_mm"],
+            margin_bottom_mm=s["margin_bottom_mm"],
+
+            horizontal_gap_mm=s["horizontal_gap_mm"],
+            vertical_gap_mm=s["vertical_gap_mm"],
+
+            image_width_mm=s["image_width_mm"],
+            image_height_mm=s["image_height_mm"],
+
+            layout_mode=s["layout_mode"],
+
+            scaling_mode=s["scaling_mode"],
+
+            auto_fit=True,
+        )
+
+        return settings
+
+    # =====================================================
+    # COLLECT IMAGE PATHS
+    # =====================================================
+
+    def _collect_image_paths(self):
+
+        s = self.controls.get_settings()
+
+        input_folder = s.get("input_folder", "")
+
+        if not input_folder:
+            return None, "No input folder selected."
+
+        include_subfolders = s.get("include_subfolders", True)
+
+        self.image_loader = ImageLoader(
+            include_subfolders=include_subfolders,
+            generate_thumbnails=False,
+        )
+
+        self.image_loader.scan_folder(input_folder)
+
+        valid = self.image_loader.get_valid_images()
+
+        if not valid:
+            return None, "No valid images found in the input folder."
+
+        paths = [img.path for img in valid]
+
+        return paths, None
+
+    # =====================================================
     # PREVIEW
     # =====================================================
 
@@ -345,25 +387,30 @@ class MainWindow(QMainWindow):
 
         try:
 
-            settings = (
-                self.controls.get_settings()
+            paths, err = self._collect_image_paths()
+
+            if err:
+                QMessageBox.warning(
+                    self,
+                    "Preview",
+                    err,
+                )
+                return
+
+            settings = self._build_layout_settings()
+
+            pages = self.layout_engine.generate_layout(
+                paths,
+                settings,
             )
 
-            print("\n========== PREVIEW ==========")
-
-            for k, v in settings.items():
-
-                print(k, ":", v)
+            self.preview_panel.draw_multi_page_preview(
+                pages,
+            )
 
             self.statusBar().showMessage(
-                "Preview generated"
-            )
-
-            show_info(
-                self,
-                "Preview",
-                "Preview generation placeholder.\n\n"
-                "Live rendering engine will be added later.",
+                f"Preview: {len(paths)} images, "
+                f"{len(pages)} page(s)"
             )
 
         except Exception as e:
@@ -383,48 +430,137 @@ class MainWindow(QMainWindow):
 
         try:
 
-            settings = (
-                self.controls.get_settings()
-            )
+            s = self.controls.get_settings()
 
-            output_folder = settings.get(
-                "output_folder",
-                "",
-            )
+            output_folder = s.get("output_folder", "")
 
             if not output_folder:
 
                 QMessageBox.warning(
                     self,
                     "Warning",
-                    "Please select output folder.",
+                    "Please select an output folder.",
                 )
 
                 return
 
-            self.statusBar().showMessage(
-                "Generating output..."
+            paths, err = self._collect_image_paths()
+
+            if err:
+                QMessageBox.warning(
+                    self,
+                    "Export",
+                    err,
+                )
+                return
+
+            settings = self._build_layout_settings()
+
+            layout_pages = self.layout_engine.generate_layout(
+                paths,
+                settings,
             )
 
             # -----------------------------------------
-            # PLACEHOLDER
+            # BUILD EXPORT SETTINGS
             # -----------------------------------------
 
-            print("\n========== EXPORT ==========")
+            export_settings = ExportSettings(
+                export_format=s["export_format"],
+                dpi=s["dpi"],
+                jpg_quality=s["jpg_quality"],
+                background_color=tuple(
+                    s["background_color"][:3]
+                ),
+                transparent=(
+                    s.get("background_type", "Solid Color")
+                    == "Transparent"
+                ),
+            )
 
-            for k, v in settings.items():
+            # -----------------------------------------
+            # BUILD CUT MARK SETTINGS
+            # -----------------------------------------
 
-                print(k, ":", v)
+            cutmark_settings = CutMarkSettings(
+                enabled=s["cutmarks_enabled"],
+                length_mm=s["cutmark_length_mm"],
+                offset_mm=s["cutmark_offset_mm"],
+            )
+
+            # -----------------------------------------
+            # BUILD PAGE DATA
+            # -----------------------------------------
+
+            export_pages = []
+
+            for page in layout_pages:
+
+                image_items = []
+
+                for item in page.items:
+
+                    image_items.append({
+                        "path": item.path,
+                        "x": item.x,
+                        "y": item.y,
+                        "w": item.w,
+                        "h": item.h,
+                        "scaling_mode": item.scaling_mode,
+                    })
+
+                page_data = PageData(
+                    width_mm=settings.page_width_mm,
+                    height_mm=settings.page_height_mm,
+                    image_items=image_items,
+                )
+
+                export_pages.append(page_data)
+
+            # -----------------------------------------
+            # PROGRESS DIALOG
+            # -----------------------------------------
+
+            progress_dlg = ExportProgressDialog(self)
+            progress_dlg.show()
+
+            progress_dlg.update_progress(
+                10,
+                "Rendering pages...",
+            )
+
+            # -----------------------------------------
+            # EXPORT
+            # -----------------------------------------
+
+            filename_pattern = "sheet_{page}_{date}"
+
+            self.export_engine.export_pages(
+                pages=export_pages,
+                output_folder=output_folder,
+                filename_pattern=filename_pattern,
+                export_settings=export_settings,
+                cutmark_settings=cutmark_settings,
+            )
+
+            progress_dlg.update_progress(
+                100,
+                "Export completed!",
+            )
+
+            progress_dlg.accept()
 
             self.statusBar().showMessage(
-                "Export completed"
+                f"Export completed: "
+                f"{len(export_pages)} page(s)"
             )
 
             show_success(
                 self,
-                "Success",
-                "Export placeholder completed.\n\n"
-                "Export engine integration coming next.",
+                "Export Complete",
+                f"Successfully exported "
+                f"{len(export_pages)} page(s) to:\n"
+                f"{output_folder}",
             )
 
         except Exception as e:
@@ -519,21 +655,19 @@ class MainWindow(QMainWindow):
             data = template.get("data", {})
 
             # -----------------------------------------
-            # PLACEHOLDER
+            # APPLY TEMPLATE DATA TO CONTROLS
             # -----------------------------------------
 
-            print("\n========== TEMPLATE ==========")
+            self._apply_template_to_controls(data)
 
-            print(data)
+            self.statusBar().showMessage(
+                f"Template loaded: {name}"
+            )
 
             show_success(
                 self,
                 "Template Loaded",
                 f"Loaded template:\n{name}",
-            )
-
-            self.statusBar().showMessage(
-                f"Template loaded: {name}"
             )
 
         except Exception as e:
@@ -544,6 +678,173 @@ class MainWindow(QMainWindow):
                 str(e),
                 traceback.format_exc(),
             )
+
+    # =====================================================
+    # APPLY TEMPLATE DATA TO CONTROLS
+    # =====================================================
+
+    def _apply_template_to_controls(self, data):
+
+        """Apply template data dictionary to the controls panel."""
+
+        # CANVAS
+
+        canvas = data.get("canvas", {})
+
+        if canvas:
+            preset = canvas.get("preset", "")
+
+            if preset:
+                index = self.controls.canvas_preset.findText(
+                    preset
+                )
+                if index >= 0:
+                    self.controls.canvas_preset.setCurrentIndex(
+                        index
+                    )
+
+            width = canvas.get("width_mm")
+            if width is not None:
+                self.controls.width_spin.setValue(width)
+
+            height = canvas.get("height_mm")
+            if height is not None:
+                self.controls.height_spin.setValue(height)
+
+            orientation = canvas.get("orientation", "")
+            if orientation:
+                idx = self.controls.orientation_combo.findText(
+                    orientation.capitalize()
+                )
+                if idx >= 0:
+                    self.controls.orientation_combo.setCurrentIndex(
+                        idx
+                    )
+
+            dpi = canvas.get("dpi")
+            if dpi is not None:
+                self.controls.dpi_spin.setValue(dpi)
+
+        # LAYOUT
+
+        layout_data = data.get("layout", {})
+
+        if layout_data:
+            mode = layout_data.get("layout_mode")
+            if mode:
+                idx = self.controls.layout_mode.findText(mode)
+                if idx >= 0:
+                    self.controls.layout_mode.setCurrentIndex(
+                        idx
+                    )
+
+            img_w = layout_data.get("image_width_mm")
+            if img_w is not None:
+                self.controls.image_width.setValue(img_w)
+
+            img_h = layout_data.get("image_height_mm")
+            if img_h is not None:
+                self.controls.image_height.setValue(img_h)
+
+            h_gap = layout_data.get("horizontal_gap_mm")
+            if h_gap is not None:
+                self.controls.h_gap.setValue(h_gap)
+
+            v_gap = layout_data.get("vertical_gap_mm")
+            if v_gap is not None:
+                self.controls.v_gap.setValue(v_gap)
+
+        # MARGINS
+
+        margins = data.get("margins", {})
+
+        if margins:
+            left = margins.get("left_mm")
+            if left is not None:
+                self.controls.margin_left.setValue(left)
+
+            right = margins.get("right_mm")
+            if right is not None:
+                self.controls.margin_right.setValue(right)
+
+            top = margins.get("top_mm")
+            if top is not None:
+                self.controls.margin_top.setValue(top)
+
+            bottom = margins.get("bottom_mm")
+            if bottom is not None:
+                self.controls.margin_bottom.setValue(bottom)
+
+        # SCALING
+
+        scaling = data.get("scaling", {})
+
+        if scaling:
+            mode = scaling.get("mode")
+            if mode:
+                idx = self.controls.scaling_mode.findText(mode)
+                if idx >= 0:
+                    self.controls.scaling_mode.setCurrentIndex(
+                        idx
+                    )
+
+        # BACKGROUND
+
+        background = data.get("background", {})
+
+        if background:
+            bg_type = background.get("type", "solid")
+            if bg_type == "Transparent":
+                self.controls.background_type.setCurrentText(
+                    "Transparent"
+                )
+            else:
+                self.controls.background_type.setCurrentText(
+                    "Solid Color"
+                )
+
+            color = background.get("color")
+            if color and len(color) >= 3:
+                from PySide6.QtGui import QColor
+                self.controls.background_color = QColor(
+                    color[0], color[1], color[2]
+                )
+
+        # CUT MARKS
+
+        cutmarks = data.get("cutmarks", {})
+
+        if cutmarks:
+            enabled = cutmarks.get("enabled")
+            if enabled is not None:
+                self.controls.cutmark_enable.setChecked(enabled)
+
+            length = cutmarks.get("length_mm")
+            if length is not None:
+                self.controls.cutmark_length.setValue(length)
+
+            offset = cutmarks.get("offset_mm")
+            if offset is not None:
+                self.controls.cutmark_offset.setValue(offset)
+
+        # EXPORT
+
+        export = data.get("export", {})
+
+        if export:
+            fmt = export.get("format")
+            if fmt:
+                idx = self.controls.export_format.findText(
+                    fmt.upper()
+                )
+                if idx >= 0:
+                    self.controls.export_format.setCurrentIndex(
+                        idx
+                    )
+
+            quality = export.get("jpg_quality")
+            if quality is not None:
+                self.controls.jpg_quality.setValue(quality)
 
     # =====================================================
     # ABOUT
